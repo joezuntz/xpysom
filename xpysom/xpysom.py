@@ -437,6 +437,7 @@ class XPySom:
         """
 
         if comm is not None:
+            comm.Barrier()
             mpi_reduce(comm, self._denominator_gpu, self.xp)
             mpi_reduce(comm, self._numerator_gpu, self.xp)
 
@@ -693,7 +694,7 @@ class XPySom:
         # These are host arrays so we do not need to move from device
         if comm is not None:
             import mpi4py.MPI
-            self._weights = comm.Bcast(self._weights)
+            comm.Bcast(self._weights)
 
 
     def pca_weights_init(self, data, comm=None):
@@ -725,7 +726,7 @@ class XPySom:
 
         if comm is not None:
             import mpi4py.MPI
-            self._weights = comm.Bcast(self._weights)
+            comm.Bcast(self._weights)
 
 
     def distance_map(self):

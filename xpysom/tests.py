@@ -13,6 +13,7 @@ from .neighborhoods import gaussian_generic, gaussian_rect, mexican_hat_generic,
 import pickle
 import os
 import mockmpi
+import sys
 
 class TestCupySom(unittest.TestCase):
     def setUp(self, xp=cp):
@@ -309,31 +310,39 @@ class TestNumpySomHex(TestCupySomHex):
 
 
 def core_mpi_init_weight(comm):
-    som = XPySom(5, 5, 2, sigma=1.0, learning_rate=0.5, random_seed=1)
-
+    som = XPySom(5, 5, 2, sigma=1.0, learning_rate=0.5, random_seed=1, xp=np)
     wcheck = som._weights.copy()
+    comm.Bcast(wcheck)
 
-    wcheck = comm.Bcast(wcheck)
     np.testing.assert_array_almost_equal(wcheck, som._weights)
 
 def core_mpi_train(comm):
     # train two equivalent SOMs, one in parallel.
+    sys.modules['mpi4py'] = mockmpi
+    sys.modules['mpi4py.MPI'] = mockmpi.comm
+    mockmpi.MPI = mockmpi.comm
+
     nfeat = 5
-    ndata = 200
+    ndata = 100
 
     # data at root
-    data = np.random.uniform((nfeat, ndata))
-    data = comm.Bcast(data)
-    my_data = np.array_split(data, comm.size)[comm.rank]
+    rng = np.random.default_rng(12345)
+    # should ensure all rng values the same
+    data = rng.uniform(size=(ndata, nfeat))
 
-    som1 = XPySom(5, 5, 2, sigma=1.0, learning_rate=0.5, random_seed=1)
-    som2 = XPySom(5, 5, 2, sigma=1.0, learning_rate=0.5, random_seed=1)
+    # split data among processors
+    my_data = np.array_split(data, comm.size)[comm.rank]
+    print(comm.rank, my_data.shape)
+
+    som1 = XPySom(5, 5, nfeat, sigma=1.0, learning_rate=0.5, random_seed=7, xp=np)
 
     som1.train(my_data, 10, comm=comm)
-
-    # results should be the same as a serial test
+    comm.Barrier()
+    
+    # results should be the same as a serial test using all the data
     if comm.rank == 0:
-        som2.train(data)
+        som2 = XPySom(5, 5, nfeat, sigma=1.0, learning_rate=0.5, random_seed=7, xp=np)
+        som2.train(data, 10, comm=None)
         np.testing.assert_array_almost_equal(som1._weights, som2._weights)
 
 
@@ -341,14 +350,15 @@ def core_mpi_train(comm):
 
 class TestMPI(unittest.TestCase):
 
-    def test_mpi_init_weight(self):
-        # train two equivalent SOMs, one in parallel.
-
     def test_pca_weights_init(self):
-        mockmpi.mock_mpiexec(core_mpi_init_weight, 2)
-        mockmpi.mock_mpiexec(core_mpi_init_weight, 5)
+        mockmpi.mock_mpiexec(2, core_mpi_init_weight)
+        mockmpi.mock_mpiexec(5, core_mpi_init_weight)
 
 
     def test_mpi_train(self):
-        mockmpi.mock_mpiexec(core_mpi_train, 2)
-        mockmpi.mock_mpiexec(core_mpi_train, 5)
+        mockmpi.mock_mpiexec(2, core_mpi_train)
+        mockmpi.mock_mpiexec(5, core_mpi_train)
+
+
+if __name__ == "__main__":
+    unittest.main()
