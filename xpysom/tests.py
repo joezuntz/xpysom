@@ -12,6 +12,7 @@ from .neighborhoods import gaussian_generic, gaussian_rect, mexican_hat_generic,
 
 import pickle
 import os
+import mockmpi
 
 class TestCupySom(unittest.TestCase):
     def setUp(self, xp=cp):
@@ -304,3 +305,50 @@ class TestCupySomHex(unittest.TestCase):
 class TestNumpySomHex(TestCupySomHex):
     def setUp(self):
         TestCupySom.setUp(self, xp=np)
+
+
+
+def core_mpi_init_weight(comm):
+    som = XPySom(5, 5, 2, sigma=1.0, learning_rate=0.5, random_seed=1)
+
+    wcheck = som._weights.copy()
+
+    wcheck = comm.Bcast(wcheck)
+    np.testing.assert_array_almost_equal(wcheck, som._weights)
+
+def core_mpi_train(comm):
+    # train two equivalent SOMs, one in parallel.
+    nfeat = 5
+    ndata = 200
+
+    # data at root
+    data = np.random.uniform((nfeat, ndata))
+    data = comm.Bcast(data)
+    my_data = np.array_split(data, comm.size)[comm.rank]
+
+    som1 = XPySom(5, 5, 2, sigma=1.0, learning_rate=0.5, random_seed=1)
+    som2 = XPySom(5, 5, 2, sigma=1.0, learning_rate=0.5, random_seed=1)
+
+    som1.train(my_data, 10, comm=comm)
+
+    # results should be the same as a serial test
+    if comm.rank == 0:
+        som2.train(data)
+        np.testing.assert_array_almost_equal(som1._weights, som2._weights)
+
+
+
+
+class TestMPI(unittest.TestCase):
+
+    def test_mpi_init_weight(self):
+        # train two equivalent SOMs, one in parallel.
+
+    def test_pca_weights_init(self):
+        mockmpi.mock_mpiexec(core_mpi_init_weight, 2)
+        mockmpi.mock_mpiexec(core_mpi_init_weight, 5)
+
+
+    def test_mpi_train(self):
+        mockmpi.mock_mpiexec(core_mpi_train, 2)
+        mockmpi.mock_mpiexec(core_mpi_train, 5)

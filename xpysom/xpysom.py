@@ -31,6 +31,21 @@ DEFAULT_CPU_CORE_OVERSUBSCRIPTION = 500
 beginning = None
 sec_left = None
 
+
+def mpi_reduce(comm, data, xp):
+    import mpi4py.MPI
+    # TODO: bleeding edge mpi4py versions
+    # can directly access cupy arrays. Once
+    # that is mainstream then use it here
+
+    if xp.__name__ == 'cupy':
+        tmp = self.xp.asnumpy(data)
+        comm.Allreduce(mpi4py.MPI.IN_PLACE, tmp)
+        data[:] = xp.asarray(tmp)
+    else:
+        comm.Allreduce(mpi4py.MPI.IN_PLACE, data)
+
+
 def print_progress(t, T):
     digits = len(str(T))
 
@@ -415,11 +430,16 @@ class XPySom:
         self._denominator_gpu += sum_g_gpu[:,:,self.xp.newaxis]
 
 
-    def _merge_updates(self):
+    def _merge_updates(self, comm=None):
         """
         Divides the numerator accumulator by the denominator accumulator 
         to compute the new weights. 
         """
+
+        if comm is not None:
+            mpi_reduce(comm, self._denominator_gpu, self.xp)
+            mpi_reduce(comm, self._numerator_gpu, self.xp)
+
         self._weights_gpu = self.xp.where(
             self._denominator_gpu != 0,
             self._numerator_gpu / self._denominator_gpu,
@@ -427,7 +447,7 @@ class XPySom:
         )
 
 
-    def train(self, data, num_epochs, iter_beg=0, iter_end=None, verbose=False):
+    def train(self, data, num_epochs, iter_beg=0, iter_end=None, verbose=False, comm=None):
         """Trains the SOM.
 
         Parameters
@@ -508,7 +528,7 @@ class XPySom:
                         num_epochs*len(data)
                     )
                     
-            self._merge_updates()
+            self._merge_updates(comm=comm)
 
         # Copy back arrays to host
         if self.xp.__name__ == 'cupy':
@@ -654,20 +674,29 @@ class XPySom:
             return (distance > 1.5).mean().item()
 
 
-    def random_weights_init(self, data):
+    def random_weights_init(self, data, comm=None):
         """Initializes the weights of the SOM
         picking random samples from data.
         TODO: unoptimized
         """
         self._check_input_len(data)
-        it = np.nditer(self._weights[:,:,0], flags=['multi_index'])
-        while not it.finished:
-            rand_i = self._random_generator.randint(len(data))
-            self._weights[it.multi_index] = data[rand_i]
-            it.iternext()
+
+        # Only the root process needs to do this
+        if (comm is None) or (comm.rank == 0):
+            it = np.nditer(self._weights[:,:,0], flags=['multi_index'])
+            while not it.finished:
+                rand_i = self._random_generator.randint(len(data))
+                self._weights[it.multi_index] = data[rand_i]
+                it.iternext()
+
+        # Give the weights from the root process to everyone else.
+        # These are host arrays so we do not need to move from device
+        if comm is not None:
+            import mpi4py.MPI
+            self._weights = comm.Bcast(self._weights)
 
 
-    def pca_weights_init(self, data):
+    def pca_weights_init(self, data, comm=None):
         """Initializes the weights to span the first two principal components.
 
         This initialization doesn't depend on random processes and
@@ -682,15 +711,21 @@ class XPySom:
             msg = 'The data needs at least 2 features for pca initialization'
             raise ValueError(msg)
         self._check_input_len(data)
-        if len(self._neigx) == 1 or len(self._neigy) == 1:
-            msg = 'PCA initialization inappropriate:' + \
-                  'One of the dimensions of the map is 1.'
-            warn(msg)
-        pc_length, pc = np.linalg.eig(np.cov(np.transpose(data)))
-        pc_order = np.argsort(-pc_length)
-        for i, c1 in enumerate(np.linspace(-1, 1, len(self._neigx))):
-            for j, c2 in enumerate(np.linspace(-1, 1, len(self._neigy))):
-                self._weights[i, j] = c1*pc[pc_order[0]] + c2*pc[pc_order[1]]
+
+        if (comm is None) or (comm.rank == 0):
+            if len(self._neigx) == 1 or len(self._neigy) == 1:
+                msg = 'PCA initialization inappropriate:' + \
+                      'One of the dimensions of the map is 1.'
+                warn(msg)
+            pc_length, pc = np.linalg.eig(np.cov(np.transpose(data)))
+            pc_order = np.argsort(-pc_length)
+            for i, c1 in enumerate(np.linspace(-1, 1, len(self._neigx))):
+                for j, c2 in enumerate(np.linspace(-1, 1, len(self._neigy))):
+                    self._weights[i, j] = c1*pc[pc_order[0]] + c2*pc[pc_order[1]]
+
+        if comm is not None:
+            import mpi4py.MPI
+            self._weights = comm.Bcast(self._weights)
 
 
     def distance_map(self):
