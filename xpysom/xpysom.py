@@ -39,7 +39,7 @@ def mpi_reduce(comm, data, xp):
     # that is mainstream then use it here
 
     if xp.__name__ == 'cupy':
-        tmp = self.xp.asnumpy(data)
+        tmp = xp.asnumpy(data)
         comm.Allreduce(mpi4py.MPI.IN_PLACE, tmp)
         data[:] = xp.asarray(tmp)
     else:

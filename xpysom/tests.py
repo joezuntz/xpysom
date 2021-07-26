@@ -309,14 +309,16 @@ class TestNumpySomHex(TestCupySomHex):
 
 
 
-def core_mpi_init_weight(comm):
-    som = XPySom(5, 5, 2, sigma=1.0, learning_rate=0.5, random_seed=1, xp=np)
+def core_mpi_init_weight(comm, xp):
+    xp = {'np': np, 'cp': cp}[xp]
+    som = XPySom(5, 5, 2, sigma=1.0, learning_rate=0.5, random_seed=1, xp=xp)
     wcheck = som._weights.copy()
     comm.Bcast(wcheck)
 
     np.testing.assert_array_almost_equal(wcheck, som._weights)
 
-def core_mpi_train(comm):
+def core_mpi_train(comm, xp):
+    xp = {'np': np, 'cp': cp}[xp]
     # train two equivalent SOMs, one in parallel.
     sys.modules['mpi4py'] = mockmpi
     sys.modules['mpi4py.MPI'] = mockmpi.comm
@@ -332,32 +334,36 @@ def core_mpi_train(comm):
 
     # split data among processors
     my_data = np.array_split(data, comm.size)[comm.rank]
-    print(comm.rank, my_data.shape)
 
-    som1 = XPySom(5, 5, nfeat, sigma=1.0, learning_rate=0.5, random_seed=7, xp=np)
+    som1 = XPySom(5, 5, nfeat, sigma=1.0, learning_rate=0.5, random_seed=7, xp=xp)
 
     som1.train(my_data, 10, comm=comm)
     comm.Barrier()
     
     # results should be the same as a serial test using all the data
     if comm.rank == 0:
-        som2 = XPySom(5, 5, nfeat, sigma=1.0, learning_rate=0.5, random_seed=7, xp=np)
+        som2 = XPySom(5, 5, nfeat, sigma=1.0, learning_rate=0.5, random_seed=7, xp=xp)
         som2.train(data, 10, comm=None)
         np.testing.assert_array_almost_equal(som1._weights, som2._weights)
 
 
 
 
-class TestMPI(unittest.TestCase):
-
+class TestMPINumpy(unittest.TestCase):
+    def setUp(self):
+        self.xp = 'np'
     def test_pca_weights_init(self):
-        mockmpi.mock_mpiexec(2, core_mpi_init_weight)
-        mockmpi.mock_mpiexec(5, core_mpi_init_weight)
+        mockmpi.mock_mpiexec(2, core_mpi_init_weight, self.xp)
+        mockmpi.mock_mpiexec(5, core_mpi_init_weight, self.xp)
 
 
     def test_mpi_train(self):
-        mockmpi.mock_mpiexec(2, core_mpi_train)
-        mockmpi.mock_mpiexec(5, core_mpi_train)
+        mockmpi.mock_mpiexec(2, core_mpi_train, self.xp)
+        mockmpi.mock_mpiexec(5, core_mpi_train, self.xp)
+
+class TestMPICupy(TestMPINumpy):
+    def setUp(self):
+    	self.xp	= 'cp'
 
 
 if __name__ == "__main__":
