@@ -18,7 +18,7 @@ except:
     default_xp = np
 
 from .distances import cosine_distance, manhattan_distance, euclidean_squared_distance, euclidean_squared_distance_part, euclidean_distance
-from .neighborhoods import gaussian_generic, gaussian_rect, mexican_hat_generic, mexican_hat_rect, bubble, triangle, prepare_neig_func
+from .neighborhoods import gaussian_generic, gaussian_rect, mexican_hat_generic, mexican_hat_rect, bubble, triangle, prepare_neig_func, gaussian_torus
 from .utils import find_cpu_cores, find_max_cuda_threads
 from .decays import linear_decay, asymptotic_decay, exponential_decay
 
@@ -175,7 +175,7 @@ class XPySom:
         self._neigx = self.xp.arange(x)
         self._neigy = self.xp.arange(y)  
 
-        if topology not in ['hexagonal', 'rectangular']:
+        if topology not in ['hexagonal', 'rectangular', 'toroidal']:
             msg = '%s not supported only hexagonal and rectangular available'
             raise ValueError(msg % topology)
 
@@ -272,6 +272,11 @@ class XPySom:
                     mexican_hat_generic, self._xx, self._yy, self._std_coeff, self.compact_support),
                 'bubble': prepare_neig_func(
                     bubble, self._neigx, self._neigy),
+            }
+        elif self.topology == 'toroidal':
+            neig_functions = {
+                'gaussian': prepare_neig_func(
+                    gaussian_torus, self._neigx, self._neigy, self._std_coeff, self.compact_support),
             }
         else:
             neig_functions = {}
@@ -662,7 +667,7 @@ class XPySom:
         # b2mu: best 2 matching units
         b2mu_inds = self.xp.argsort(distances, axis=1)[:, :2]
         b2my_xy = self.xp.unravel_index(b2mu_inds, self._weights.shape[:2])
-        if self.topology ==  'rectangular':
+        if self.topology ==  'rectangular' or self.topology == 'toroidal':
             b2mu_x, b2mu_y = b2my_xy[0], b2my_xy[1]
             diff_b2mu_x = self.xp.abs(self.xp.diff(b2mu_x))
             diff_b2mu_y = self.xp.abs(self.xp.diff(b2mu_y))
@@ -743,6 +748,8 @@ class XPySom:
         ii = [[0, -1, -1, -1, 0, 1, 1, 1]]*2
         jj = [[-1, -1, 0, 1, 1, 1, 0, -1]]*2
 
+        torus = self.topology == 'toroidal'
+
         if self.topology == 'hexagonal':
             ii = [[1, 1, 1, 0, -1, 0], [0, 1, 0, -1, -1, -1]]
             jj = [[1, 0, -1, -1, 0, 1], [1, 0, -1, -1, 0, 1]]
@@ -752,6 +759,11 @@ class XPySom:
                 w_2 = self._weights[x, y]
                 e = y % 2 == 0   # only used on hexagonal topology
                 for k, (i, j) in enumerate(zip(ii[e], jj[e])):
+                    xi = x + i
+                    yi = y + i
+                    if torus:
+                        xi = xi % self._weights.shape[0]
+                        yi = yi % self._weights.shape[1]
                     if (x+i >= 0 and x+i < self._weights.shape[0] and
                             y+j >= 0 and y+j < self._weights.shape[1]):
                         w_1 = self._weights[x+i, y+j]

@@ -54,6 +54,33 @@ def gaussian_generic(xx, yy, std_coeff, compact_support, c, sigma, xp=default_xp
 
     return (ax*ay).transpose((0,2,1))
 
+def gaussian_torus(neigx, neigy, std_coeff, compact_support, c, sigma, xp=np):
+    """Returns a Gaussian centered in c on a rect topology
+
+    This function is optimized wrt the generic one.
+    """
+    d = 2*std_coeff**2*sigma**2
+
+    nx = neigx[xp.newaxis,:]
+    ny = neigy[xp.newaxis,:]
+    cx = c[0][:,xp.newaxis]
+    cy = c[1][:,xp.newaxis]
+
+    lx = neigx.size
+    ly = neigy.size
+
+    dx = (nx - cx + lx/2) % lx - lx/2
+    dy = (ny - cy + ly/2) % ly - ly/2
+
+    ax = xp.exp(-xp.power(dx, 2, dtype=xp.float32)/d)
+    ay = xp.exp(-xp.power(dy, 2, dtype=xp.float32)/d)
+
+    if compact_support:
+        ax *= xp.abs(dx) < sigma
+        ay *= xp.abs(dy) < sigma
+
+    return ax[:,:,xp.newaxis]*ay[:,xp.newaxis,:]
+
 def mexican_hat_rect(neigx, neigy, std_coeff, compact_support, c, sigma, xp=default_xp):
     """Mexican hat centered in c (only rect topology)"""
     d = 2*std_coeff**2*sigma**2
