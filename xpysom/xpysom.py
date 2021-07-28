@@ -17,7 +17,7 @@ except:
     print("WARNING: CuPy could not be imported")
     default_xp = np
 
-from .distances import cosine_distance, manhattan_distance, euclidean_squared_distance, euclidean_squared_distance_part, euclidean_distance
+from .distances import cosine_distance, manhattan_distance, euclidean_squared_distance, euclidean_squared_distance_part, euclidean_distance, chi2_distance
 from .neighborhoods import gaussian_generic, gaussian_rect, mexican_hat_generic, mexican_hat_rect, bubble, triangle, prepare_neig_func, gaussian_torus
 from .utils import find_cpu_cores, find_max_cuda_threads
 from .decays import linear_decay, asymptotic_decay, exponential_decay
@@ -220,6 +220,7 @@ class XPySom:
             'euclidean_no_opt': euclidean_squared_distance,
             'manhattan': manhattan_distance,
             'cosine': cosine_distance,
+            'chi2': chi2_distance,
         }
 
         if activation_distance not in distance_functions:
@@ -317,12 +318,16 @@ class XPySom:
             return self._xx.T[xy], self._yy.T[xy]
 
 
-    def activate(self, x):
+    def activate(self, x, x_error=None):
         """Returns the activation map to x."""
         x_gpu = self.xp.array(x)
+        if x_error is None:
+            x_error_gpu = None
+        else:
+            x_error_gpu = self.xp.array(x_error)
         self._weights_gpu = self.xp.array(self._weights)
 
-        self._activate(x_gpu)
+        self._activate(x_gpu, x_error_gpu)
 
         self._weights_gpu = None
 
@@ -332,13 +337,21 @@ class XPySom:
             return self._activation_map_gpu
 
 
-    def _activate(self, x_gpu):
+    def _activate(self, x_gpu, x_error_gpu=None):
         """Updates matrix activation_map, in this matrix
            the element i,j is the response of the neuron i,j to x"""
         if len(x_gpu.shape) == 1:
             x_gpu = self.xp.expand_dims(x_gpu, axis=0)
 
-        if self._sq_weights_gpu is not None:
+        if self._activation_distance in [chi2_distance]:
+            self._activation_map_gpu = self._activation_distance(
+                    x_gpu, 
+                    self._weights_gpu,
+                    x_error_gpu,
+                    xp=self.xp
+            )
+
+        elif self._sq_weights_gpu is not None:
             self._activation_map_gpu = self._activation_distance(
                     x_gpu, 
                     self._weights_gpu,
@@ -367,12 +380,17 @@ class XPySom:
             raise ValueError(msg)
 
 
-    def winner(self, x):
+    def winner(self, x, x_error=None):
         """Computes the coordinates of the winning neurons for the samples x.
         """
 
         x_gpu = self.xp.array(x)
         self._weights_gpu = self.xp.array(self._weights)
+
+        if x_error is None:
+            x_error_gpu = None
+        else:
+            x_error_gpu = self.xp.array(x_error)
 
         orig_shape = x_gpu.shape
         if len(orig_shape) == 1:
@@ -385,7 +403,8 @@ class XPySom:
             if end > len(x):
                 end = len(x)
 
-            chunk = self._winner(x_gpu[start:end])
+            x_error_chunk = None if x_error_gpu is None else x_error_gpu[start:end]
+            chunk = self._winner(x_gpu[start:end], x_error_chunk)
             winners_chunks.append(self.xp.vstack(chunk))
 
         winners_gpu = self.xp.hstack(winners_chunks)
@@ -402,12 +421,12 @@ class XPySom:
         else:
             return list(map(tuple, winners.T))
 
-    def _winner(self, x_gpu):
+    def _winner(self, x_gpu, x_error_gpu=None):
         """Computes the coordinates of the winning neuron for the sample x"""
         if len(x_gpu.shape) == 1:
             x_gpu = self.xp.expand_dims(x_gpu, axis=0)
 
-        self._activate(x_gpu)
+        self._activate(x_gpu, x_error_gpu)
         raveled_idxs = self._activation_map_gpu.argmin(axis=1)
         return (self._unravel_precomputed[0][raveled_idxs], self._unravel_precomputed[1][raveled_idxs])
 
@@ -453,7 +472,7 @@ class XPySom:
         )
 
 
-    def train(self, data, num_epochs, iter_beg=0, iter_end=None, verbose=False, comm=None):
+    def train(self, data, num_epochs, iter_beg=0, iter_end=None, verbose=False, x_error=None, comm=None):
         """Trains the SOM.
 
         Parameters
@@ -482,7 +501,8 @@ class XPySom:
         # Copy arrays to device
         self._weights_gpu = self.xp.asarray(self._weights, dtype=self.xp.float32)
         data_gpu = self.xp.asarray(data, dtype=self.xp.float32)
-        
+        x_error_gpu = None if x_error is None else self.xp.asarray(x_error, dtype=self.xp.float32)
+        print('x error = ', x_error)
         if verbose:
             print_progress(-1, num_epochs*len(data))
 
@@ -526,7 +546,8 @@ class XPySom:
                 if end > len(data):
                     end = len(data)
 
-                self._update(data_gpu[start:end], self._winner(data_gpu[start:end]), eta, sig)
+                x_error_chunk = None if x_error_gpu is None else x_error_gpu[start:end]
+                self._update(data_gpu[start:end], self._winner(data_gpu[start:end], x_error_chunk), eta, sig)
 
                 if verbose:
                     print_progress(
@@ -772,30 +793,30 @@ class XPySom:
         um = um.sum(axis=2)
         return um/um.max()
 
-    def activation_response(self, data):
+    def activation_response(self, data, x_error=None):
         """
         Returns a matrix where the element i,j is the number of times
         that the neuron i,j have been winner.
         """
         self._check_input_len(data)
         a = np.zeros((self._weights.shape[0], self._weights.shape[1]))
-        winners = self.winner(data)
+        winners = self.winner(data, x_error)
         for win in winners:
             a[win] += 1
         return a
 
-    def win_map(self, data):
+    def win_map(self, data, x_error):
         """Returns a dictionary wm where wm[(i,j)] is a list
         with all the patterns that have been mapped in the position i,j.
         """
         self._check_input_len(data)
         winmap = defaultdict(list)
-        winners = self.winner(data)
+        winners = self.winner(data, x_error)
         for x, win in zip(data, winners):
             winmap[win].append(x)
         return winmap
 
-    def labels_map(self, data, labels):
+    def labels_map(self, data, labels, x_error=None):
         """Returns a dictionary wm where wm[(i,j)] is a dictionary
         that contains the number of samples from a given label
         that have been mapped in position i,j.
@@ -813,7 +834,7 @@ class XPySom:
         if not len(data) == len(labels):
             raise ValueError('data and labels must have the same length.')
         winmap = defaultdict(list)
-        winners = self.winner(data)
+        winners = self.winner(data, x_error)
         for win, l in zip(winners, labels):
             winmap[win].append(l)
         for position in winmap:

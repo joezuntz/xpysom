@@ -93,3 +93,31 @@ def manhattan_distance(x, w, xp=default_xp):
             axis=3,
         )
         return d.reshape(x.shape[0], w.shape[0]*w.shape[1])
+
+def chi2_distance(x, w, x_error, w_flat_sq=None, xp=default_xp):
+    ndata, nfeat = x.shape
+
+    w_flat = w.reshape(-1, w.shape[2])  # shape nx*ny, nfeat
+
+    # i = data point
+    # j = feature
+    # k = cell
+
+    ncell = w_flat.shape[0]
+    d = xp.zeros((ndata, ncell, nfeat))
+    for i in range(nfeat):
+        d[:, :, i] = xp.outer.subtract(x[:, i], w_flat[:, i])
+
+    inv_x2_error = xp.pow(x_error, -2)
+
+    d2 = xp.einsum('ijk,ik,ijk->ij', d, inv_x2_error, d)
+
+    return d2
+
+
+# x:  (6000, 5)
+# wflat:  (1024, 5)
+
+# w:  (32, 32, 5)
+# wflat sq:  (1024, 1)
+# out (6000, 1024)
